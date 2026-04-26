@@ -13,14 +13,21 @@ using MyNotes.ViewModels;
 using MessageBox = System.Windows.MessageBox;
 
 namespace MyNotes;
+    
 
 public partial class MainWindow : Window {
+    // Services
     private readonly AppSettingsService _settingsService;
     private readonly NoteFileService _fileService;
     private readonly NotepadProcessService _notepadService;
     private readonly MainWindowViewModel _viewModel;
     private readonly DispatcherTimer _renameBannerTimer;
+
+    // UI State
+    private bool _isHeaderEditing;
     private bool _isUpdatingSettingsView;
+    private bool _showNotesDirectory;
+    private bool _showModifiedSubtitle;
 
     // Drag state
     private Point? _dragStart;
@@ -30,13 +37,67 @@ public partial class MainWindow : Window {
     private double _dragInitialTop;
     private const double _dragThreshold = 5.0;
 
+    // Properties
+    public bool IsHeaderEditing
+    {
+        get => _isHeaderEditing;
+        set
+        {
+            _isHeaderEditing = value;
+            HeaderText.Visibility = value ? Visibility.Collapsed : Visibility.Visible;
+            HeaderTextEdit.Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+            if (value)
+            {
+                HeaderTextEdit.Text = HeaderText.Text;
+                HeaderTextEdit.Focus();
+                HeaderTextEdit.SelectAll();
+            }
+        }
+    }
+
+    public bool ShowNotesDirectory
+    {
+        get => _showNotesDirectory;
+        set
+        {
+            if (_showNotesDirectory != value)
+            {
+                _showNotesDirectory = value;
+                OnPropertyChanged(nameof(ShowNotesDirectory));
+                UpdateShowHideNotesDirectoryButton();
+            }
+        }
+    }
+
+    public bool ShowModifiedSubtitle
+    {
+        get => _showModifiedSubtitle;
+        set
+        {
+            if (_showModifiedSubtitle != value)
+            {
+                _showModifiedSubtitle = value;
+                OnPropertyChanged(nameof(ShowModifiedSubtitle));
+            }
+        }
+    }
+
     public MainWindow() {
         InitializeComponent();
+
+        DataContext = this;
 
         _settingsService = new AppSettingsService();
         _fileService = new NoteFileService(_settingsService);
         _notepadService = new NotepadProcessService();
-        _viewModel = new MainWindowViewModel(_fileService);
+        _viewModel = new MainWindowViewModel(_fileService, _settingsService);
+        // Load header from settings, fallback to default if not set
+        var savedHeader = _settingsService.LoadCustomHeader();
+        if (!string.IsNullOrWhiteSpace(savedHeader))
+            HeaderText.Text = savedHeader;
+        else
+            HeaderText.Text = "My Notes";
+
         _renameBannerTimer = new DispatcherTimer {
             Interval = TimeSpan.FromSeconds(10)
         };
@@ -59,6 +120,55 @@ public partial class MainWindow : Window {
         SetSettingsViewVisible(false);
 
         Closing += OnClosing;
+        HeaderText.MouseLeftButtonDown += HeaderText_MouseLeftButtonDown;
+        HeaderTextEdit.LostFocus += HeaderEditBox_LostFocus;
+        HeaderTextEdit.KeyDown += HeaderEditBox_KeyDown;
+    }
+    private void HeaderEditBox_LostFocus(object sender, RoutedEventArgs e)
+    {
+        EndHeaderEdit(true);
+    }
+
+    private void HeaderEditBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Enter)
+        {
+            EndHeaderEdit(true);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            EndHeaderEdit(false);
+            e.Handled = true;
+        }
+    }
+    // Handles MouseLeftButtonDownPreview event for header edit box
+    private void HeaderText_MouseLeftButtonDown(object sender, MouseButtonEventArgs e) {
+        if (e.ClickCount == 2)
+        {
+            IsHeaderEditing = true;
+            e.Handled = true;
+        }
+    }
+
+    private void EndHeaderEdit(bool save)
+    {
+        if (!IsHeaderEditing) return;
+        IsHeaderEditing = false;
+        if (save)
+        {
+            var newHeader = HeaderTextEdit.Text.Trim();
+            if (string.IsNullOrWhiteSpace(newHeader))
+            {
+                newHeader = "My Notes";
+                _settingsService.SaveCustomHeader("");
+            }
+            else
+            {
+                _settingsService.SaveCustomHeader(newHeader);
+            }
+            HeaderText.Text = newHeader;
+        }
     }
 
     private void MainWindow_Loaded(object sender, RoutedEventArgs e) {
@@ -67,6 +177,11 @@ public partial class MainWindow : Window {
         Top = SystemParameters.VirtualScreenTop;
         Width = SystemParameters.VirtualScreenWidth;
         Height = SystemParameters.VirtualScreenHeight;
+
+        // Move the Notes button just above the clock (system tray) on startup
+        const double taskbarHeight = 60;
+        const double marginFromTaskbar = 8;
+        Canvas.SetBottom(OverlayButton, taskbarHeight + marginFromTaskbar);
     }
 
     // Sync HeaderText and restore the tracked selection after every reload of notes. 
@@ -78,17 +193,53 @@ public partial class MainWindow : Window {
             FileList.SelectedItem = _viewModel.FindNote(_viewModel.SelectedFileName);
     }
 
+
     private void UpdateNotesDirectoryDisplay() {
         SettingsNotesDirectoryText.Text = _fileService.NotesDirectory;
         SettingsButton.ToolTip = SettingsView.Visibility == Visibility.Visible
             ? "Return to notes"
             : "Open settings";
+        UpdateShowHideNotesDirectoryButton();
+        // No need to set visibility directly; binding handles it
+    }
+
+    private void UpdateShowHideNotesDirectoryButton()
+    {
+        if (ShowHideNotesDirectoryButton != null)
+            ShowHideNotesDirectoryButton.Content = ShowNotesDirectory ? "Hide Folder" : "Show Folder";
+        if (SettingsNotesDirectoryText != null)
+            SettingsNotesDirectoryText.Visibility = ShowNotesDirectory ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void ShowHideNotesDirectoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        ShowNotesDirectory = !ShowNotesDirectory;
     }
 
     private void UpdateHeaderText() {
-        HeaderText.Text = SettingsView.Visibility == Visibility.Visible
-            ? "Settings"
-            : _viewModel.HeaderText;
+        // Only update if HeaderText is visible (panel is wide enough)
+        if (HeaderText.Visibility == Visibility.Visible)
+        {
+            if (SettingsView.Visibility == Visibility.Visible)
+            {
+                HeaderText.Text = "Settings";
+            }
+            else
+            {
+                // Always restore the custom header from settings
+                var savedHeader = _settingsService.LoadCustomHeader();
+                HeaderText.Text = !string.IsNullOrWhiteSpace(savedHeader) ? savedHeader : "My Notes";
+            }
+        }
+    }
+
+    // Pin note button click handler
+    private void PinNoteButton_Click(object sender, RoutedEventArgs e) {
+        if (sender is FrameworkElement element && element.DataContext is NoteItem note) {
+            _viewModel.TogglePin(note);
+            FileList.ItemsSource = null;
+            FileList.ItemsSource = _viewModel.Notes;
+        }
     }
 
     private void SetSettingsViewVisible(bool isVisible) {
@@ -108,11 +259,27 @@ public partial class MainWindow : Window {
             TimestampTopOption.IsChecked = timestampPlacement == NoteTimestampPlacement.Top;
             TimestampBottomOption.IsChecked = timestampPlacement == NoteTimestampPlacement.Bottom;
             SettingsNotesDirectoryText.Text = _fileService.NotesDirectory;
+            var showModified = _settingsService.LoadShowModifiedSubtitle();
+            ShowModifiedSubtitleOption.IsChecked = showModified;
+            ShowModifiedSubtitle = showModified;
         } finally {
             _isUpdatingSettingsView = false;
         }
     }
+    private void ShowModifiedSubtitleOption_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_isUpdatingSettingsView) return;
+        var isChecked = ShowModifiedSubtitleOption.IsChecked ?? true;
+        _settingsService.SaveShowModifiedSubtitle(isChecked);
+        ShowModifiedSubtitle = isChecked;
+    }
 
+    // INotifyPropertyChanged implementation for binding
+    public event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+    protected virtual void OnPropertyChanged(string propertyName)
+    {
+        PropertyChanged?.Invoke(this, new System.ComponentModel.PropertyChangedEventArgs(propertyName));
+    }
     private void HideNotesPanelAndMinimizeNotepad() {
         NotesPanel.Visibility = Visibility.Collapsed;
         _notepadService.Minimize();
@@ -135,15 +302,49 @@ public partial class MainWindow : Window {
     private void SettingsButton_Click(object sender, RoutedEventArgs e) {
         var showSettings = SettingsView.Visibility != Visibility.Visible;
         if (showSettings)
+        {
             UpdateSettingsView();
-
+        }
+        else
+        {
+            // Always refresh notes list when returning from settings
+            var showModified = _settingsService.LoadShowModifiedSubtitle();
+            ShowModifiedSubtitle = showModified;
+            _viewModel.LoadNotes();
+        }
         SetSettingsViewVisible(showSettings);
     }
 
     private void BackToNotesButton_Click(object sender, RoutedEventArgs e) {
+        // Refresh notes list to reflect any settings changes (e.g., Show Modified Subtitle)
+        _viewModel.LoadNotes();
         SetSettingsViewVisible(false);
     }
 
+    // Copies the selected note's name to the clipboard
+    private void CopyNoteName_Click(object sender, RoutedEventArgs e)
+    {
+        NoteItem? note = null;
+        if (sender is FrameworkElement element && element.DataContext is NoteItem itemNote)
+        {
+            note = itemNote;
+            FileList.SelectedItem = itemNote;
+        }
+        else
+        {
+            note = FileList.SelectedItem as NoteItem;
+        }
+        if (note is null) return;
+        try
+        {
+            Clipboard.SetText(note.DisplayName);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Failed to copy note name:\n{ex.Message}",
+                "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
     private void NewNoteButton_Click(object sender, RoutedEventArgs e) {
         try {
             var filename = CreateNewNoteFromCurrentSettings();
@@ -487,6 +688,13 @@ public partial class MainWindow : Window {
     }
 
     private void NotesPanel_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e) {
+        // If the header textbox is in edit mode and has focus, transfer focus to trigger LostFocus event
+        // This must happen BEFORE the drag starts and captures the mouse
+        if (HeaderTextEdit.IsVisible && HeaderTextEdit.IsFocused) {
+            MainCanvas.Focus();
+            return;
+        }
+
         if (!CanStartNotesPanelDrag(e.OriginalSource as DependencyObject))
             return;
 
@@ -617,15 +825,23 @@ public partial class MainWindow : Window {
         _renameBannerTimer.Tick -= RenameBannerTimer_Tick;
         _renameBannerTimer.Stop();
         RenameNoticePopup.IsOpen = false;
+        
         OverlayButton.PreviewMouseLeftButtonDown -= OverlayButton_MouseLeftButtonDown;
         OverlayButton.PreviewMouseMove -= OverlayButton_MouseMove;
         OverlayButton.PreviewMouseLeftButtonUp -= OverlayButton_MouseLeftButtonUp;
+        
         NotesPanel.PreviewMouseLeftButtonDown -= NotesPanel_PreviewMouseLeftButtonDown;
         NotesPanel.PreviewMouseMove -= NotesPanel_PreviewMouseMove;
         NotesPanel.PreviewMouseLeftButtonUp -= NotesPanel_PreviewMouseLeftButtonUp;
+        
         MainCanvas.MouseLeftButtonDown -= MainCanvas_MouseLeftButtonDown;
         KeyDown -= MainWindow_KeyDown;
-
+        
+        HeaderText.MouseLeftButtonDown -= HeaderText_MouseLeftButtonDown;
+        HeaderTextEdit.LostFocus -= HeaderEditBox_LostFocus;
+        HeaderTextEdit.KeyDown -= HeaderEditBox_KeyDown;
+        
+        _viewModel.NotesLoaded -= OnNotesLoaded;
         _viewModel.Dispose();
         _notepadService.Dispose();
         _fileService.Dispose();

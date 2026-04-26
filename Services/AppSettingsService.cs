@@ -1,6 +1,5 @@
 using System.IO;
 using System.Text.Json;
-
 namespace MyNotes.Services;
 
 public enum NoteTimestampPlacement {
@@ -35,6 +34,33 @@ public sealed class AppSettingsService {
         };
         SaveSettings(settings);
     }
+
+    public IReadOnlyList<string> LoadPinnedNotes()
+    {
+        var settings = LoadSettings();
+        return settings.PinnedNotes ?? new List<string>();
+    }
+
+    public void SavePinnedNotes(IEnumerable<string> pinnedNotes)
+    {
+        var settings = LoadSettings() with
+        {
+            PinnedNotes = pinnedNotes?.ToList() ?? new List<string>()
+        };
+        SaveSettings(settings);
+    }
+
+    public bool LoadShowModifiedSubtitle() {
+        return LoadSettings().ShowModifiedSubtitle;
+    }
+
+    public void SaveShowModifiedSubtitle(bool showModifiedSubtitle) {
+        var settings = LoadSettings() with {
+            ShowModifiedSubtitle = showModifiedSubtitle
+        };
+        SaveSettings(settings);
+    }
+
 
     public NoteTimestampPlacement LoadTimestampPlacement() {
         return LoadSettings().TimestampPlacement;
@@ -77,9 +103,27 @@ public sealed class AppSettingsService {
         File.WriteAllText(_settingsFilePath, json);
     }
 
-    private sealed record AppSettings {
+    public string? LoadCustomHeader()
+    {
+        return LoadSettings().CustomHeader;
+    }
+
+    public void SaveCustomHeader(string? customHeader)
+    {
+        var settings = LoadSettings() with
+        {
+            CustomHeader = customHeader
+        };
+        SaveSettings(settings);
+    }
+
+    private sealed record AppSettings
+    {
         public string? NotesDirectory { get; init; }
         public NoteTimestampPlacement TimestampPlacement { get; init; } = NoteTimestampPlacement.None;
         public bool PromptForNoteName { get; init; }
+        public bool ShowModifiedSubtitle { get; init; } = true;
+        public string? CustomHeader { get; init; }
+        public List<string>? PinnedNotes { get; init; }
     }
 }
